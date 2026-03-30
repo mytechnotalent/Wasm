@@ -4,16 +4,27 @@
 //!
 //! # Guest2 WebAssembly Component
 //!
-//! Implements the `example` world generated from `guest2/wit/world.wit`.
+//! Implements the `guest2-world` generated from `guest2/wit/world.wit`.
 //! Exports `run` (with an optional `name` parameter) and `describe` to
 //! demonstrate a guest API that is intentionally different from guest1.
 
-/// Generated bindings for the guest2 WIT world.
-#[allow(warnings)]
-mod bindings;
+#![no_std]
 
-/// Guest trait generated from guest2's WIT world.
-use bindings::Guest;
+// Enable the global allocator for heap-backed collections.
+extern crate alloc;
+
+use alloc::format; // String formatting macro for no_std.
+use alloc::string::String; // Owned string type for no_std.
+
+/// Global heap allocator required by the canonical ABI's `cabi_realloc`.
+#[global_allocator]
+static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
+
+// Generate guest-side bindings for the `guest2-world` WIT world.
+wit_bindgen::generate!({
+    world: "guest2-world",
+    path: "wit",
+});
 
 /// Default name used when no parameter is provided to `run`.
 const DEFAULT_NAME: &str = "world";
@@ -21,15 +32,22 @@ const DEFAULT_NAME: &str = "world";
 /// Concrete guest2 component implementation exported to the host.
 struct Component;
 
+// Register `Component` as the component's exported implementation.
+export!(Component);
+
 impl Guest for Component {
     /// Entry point exported by the component world.
     ///
     /// # Arguments
     ///
     /// * `name` - Optional greeting name; defaults to `"world"` when `None`.
-    fn run(name: Option<String>) {
+    ///
+    /// # Returns
+    ///
+    /// A greeting string.
+    fn run(name: Option<String>) -> String {
         let name = name.as_deref().unwrap_or(DEFAULT_NAME);
-        println!("guest2 run() called: hello, {name}!");
+        format!("guest2 run() called: hello, {name}!")
     }
 
     /// Extra export to make guest2's WIT/API distinct from guest1.
@@ -38,9 +56,6 @@ impl Guest for Component {
     ///
     /// Returns a short description string consumed by the host when present.
     fn describe() -> String {
-        "guest2 has an extra `describe` export".to_string()
+        String::from("guest2 has an extra `describe` export")
     }
 }
-
-// Exports `Component` as the guest implementation for generated bindings.
-bindings::export!(Component with_types_in bindings);

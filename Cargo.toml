@@ -9,4 +9,9 @@ path = "host.rs"
 
 [dependencies]
 wasmtime = { version = "43.0.0", features = ["component-model", "pulley"] }
-wasmtime-wasi = "43.0.0"
+
+[build-dependencies]
+wasmtime = { version = "43.0.0", features = ["component-model", "pulley"] }
+wit-component = "0.230"
+
+[workspace]

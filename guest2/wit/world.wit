@@ -1,7 +1,7 @@
 package component:guest2;
 
 /// An example world for the component to target.
-world example {
-    export run: func(name: option<string>);
+world guest2-world {
+    export run: func(name: option<string>) -> string;
     export describe: func() -> string;
 }

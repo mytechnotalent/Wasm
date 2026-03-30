@@ -5,68 +5,34 @@
 //! # Integration Tests for Component-Model Guests on Pulley
 //!
 //! Validates that the compiled WASM guest components load correctly through
-//! the Component Model, instantiate with WASI support, export the expected
-//! functions (`run` and optionally `describe`), and produce correct output
-//! when executed via the Pulley interpreter backend.
+//! the Component Model, instantiate without WASI, export the expected
+//! functions (`run` and optionally `describe`), and return correct values
+//! when executed via the default engine.
 
-/// Component Model loader, linker, and resource table types.
-use wasmtime::component::{Component, Linker, ResourceTable};
-/// Wasmtime runtime core types.
-use wasmtime::{Config, Engine, Store};
-/// In-memory output pipe for capturing guest stdout in tests.
-use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
-/// WASI context, view trait, and implementation for host state.
-use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
+use wasmtime::component::{Component, Linker}; // Component Model loader and linker.
+use wasmtime::{Engine, Store}; // Wasmtime runtime core types.
 
-/// Filesystem path to the built guest1 component artifact.
-const GUEST1_PATH: &str = "guest1/target/wasm32-wasip1/debug/guest1.wasm";
+/// Compiled guest1 component embedded at build time.
+const GUEST1_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/guest1.component.wasm"));
 
-/// Filesystem path to the built guest2 component artifact.
-const GUEST2_PATH: &str = "guest2/target/wasm32-wasip1/debug/guest2.wasm";
+/// Compiled guest2 component embedded at build time.
+const GUEST2_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/guest2.component.wasm"));
 
-/// Host state for test component instantiation with WASI support.
-struct TestHostState {
-    /// WASI context containing stdio configuration for test execution.
-    ctx: WasiCtx,
-    /// Resource table required by component-model/WASI resource handles.
-    table: ResourceTable,
-}
-
-impl WasiView for TestHostState {
-    /// Returns mutable access to the WASI context and resource table.
-    ///
-    /// # Returns
-    ///
-    /// A `WasiCtxView` containing references to this state's `ctx` and `table`.
-    fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView {
-            ctx: &mut self.ctx,
-            table: &mut self.table,
-        }
-    }
-}
-
-/// Creates a wasmtime engine configured for Component Model execution.
+/// Creates a default wasmtime engine.
 ///
 /// # Returns
 ///
-/// A wasmtime `Engine` with component-model support enabled.
-///
-/// # Panics
-///
-/// Panics if engine creation fails.
+/// A wasmtime `Engine` with default configuration.
 fn create_engine() -> Engine {
-    let mut config = Config::new();
-    config.wasm_component_model(true);
-    Engine::new(&config).expect("create component engine")
+    Engine::default()
 }
 
-/// Loads a guest component artifact from disk.
+/// Compiles an embedded WASM binary into a wasmtime component.
 ///
 /// # Arguments
 ///
 /// * `engine` - The wasmtime engine to compile with.
-/// * `path` - Filesystem path to the component `.wasm` file.
+/// * `wasm` - Raw component WASM bytes.
 ///
 /// # Returns
 ///
@@ -74,63 +40,93 @@ fn create_engine() -> Engine {
 ///
 /// # Panics
 ///
-/// Panics if the component file cannot be read or compiled.
-fn load_component(engine: &Engine, path: &str) -> Component {
-    Component::from_file(engine, path).expect("load component")
+/// Panics if the WASM binary is invalid.
+fn compile_component(engine: &Engine, wasm: &[u8]) -> Component {
+    Component::new(engine, wasm).expect("valid WASM component")
 }
 
-/// Builds a fully configured test linker with WASI interfaces registered.
+/// Instantiates a component and calls its `run` export with no arguments.
 ///
 /// # Arguments
 ///
-/// * `engine` - The wasmtime engine to associate the linker with.
+/// * `engine` - The wasmtime engine.
+/// * `component` - The compiled WASM component.
 ///
 /// # Returns
 ///
-/// A component `Linker` with all WASI sync interfaces registered.
+/// The string returned by the component's `run` export.
 ///
 /// # Panics
 ///
-/// Panics if WASI interface registration fails.
-fn build_test_linker(engine: &Engine) -> Linker<TestHostState> {
-    let mut linker = Linker::<TestHostState>::new(engine);
-    wasmtime_wasi::p2::add_to_linker_sync(&mut linker).expect("register WASI interfaces");
-    linker
+/// Panics if instantiation or the `run` call fails.
+fn call_run_no_args(engine: &Engine, component: &Component) -> String {
+    let linker = Linker::<()>::new(engine);
+    let mut store = Store::new(engine, ());
+    let instance = linker
+        .instantiate(&mut store, component)
+        .expect("instantiate");
+    let run = instance
+        .get_typed_func::<(), (String,)>(&mut store, "run")
+        .expect("get run");
+    let (result,) = run.call(&mut store, ()).expect("call run");
+    result
 }
 
-/// Creates a test store with inherited stdio.
+/// Instantiates a component and calls its `run` export with an optional name.
 ///
 /// # Arguments
 ///
-/// * `engine` - The wasmtime engine to create the store for.
+/// * `engine` - The wasmtime engine.
+/// * `component` - The compiled WASM component.
+/// * `name` - Optional name to pass to the `run` export.
 ///
 /// # Returns
 ///
-/// A `Store` containing a `TestHostState` with inherited stdio.
-fn build_test_store(engine: &Engine) -> Store<TestHostState> {
-    let state = TestHostState {
-        ctx: WasiCtx::builder().inherit_stdio().build(),
-        table: ResourceTable::new(),
-    };
-    Store::new(engine, state)
+/// The string returned by the component's `run` export.
+///
+/// # Panics
+///
+/// Panics if instantiation or the `run` call fails.
+fn call_run_with_name(engine: &Engine, component: &Component, name: Option<&str>) -> String {
+    let linker = Linker::<()>::new(engine);
+    let mut store = Store::new(engine, ());
+    let instance = linker
+        .instantiate(&mut store, component)
+        .expect("instantiate");
+    let run = instance
+        .get_typed_func::<(Option<String>,), (String,)>(&mut store, "run")
+        .expect("get run");
+    let (result,) = run
+        .call(&mut store, (name.map(String::from),))
+        .expect("call run");
+    result
 }
 
-/// Creates a test store with captured stdout for output verification.
+/// Instantiates a component and calls its `describe` export.
 ///
 /// # Arguments
 ///
-/// * `engine` - The wasmtime engine to create the store for.
+/// * `engine` - The wasmtime engine.
+/// * `component` - The compiled WASM component.
 ///
 /// # Returns
 ///
-/// A tuple of the `Store` and the `MemoryOutputPipe` capturing stdout.
-fn build_capture_store(engine: &Engine) -> (Store<TestHostState>, MemoryOutputPipe) {
-    let stdout = MemoryOutputPipe::new(4096);
-    let state = TestHostState {
-        ctx: WasiCtx::builder().stdout(stdout.clone()).build(),
-        table: ResourceTable::new(),
-    };
-    (Store::new(engine, state), stdout)
+/// The string returned by the component's `describe` export.
+///
+/// # Panics
+///
+/// Panics if instantiation or the `describe` call fails.
+fn call_describe(engine: &Engine, component: &Component) -> String {
+    let linker = Linker::<()>::new(engine);
+    let mut store = Store::new(engine, ());
+    let instance = linker
+        .instantiate(&mut store, component)
+        .expect("instantiate");
+    let describe = instance
+        .get_typed_func::<(), (String,)>(&mut store, "describe")
+        .expect("get describe");
+    let (result,) = describe.call(&mut store, ()).expect("call describe");
+    result
 }
 
 /// Verifies that the guest1 component binary loads without error.
@@ -141,7 +137,7 @@ fn build_capture_store(engine: &Engine) -> (Store<TestHostState>, MemoryOutputPi
 #[test]
 fn test_guest1_component_loads() {
     let engine = create_engine();
-    let _component = load_component(&engine, GUEST1_PATH);
+    let _component = compile_component(&engine, GUEST1_WASM);
 }
 
 /// Verifies that the guest2 component binary loads without error.
@@ -152,7 +148,7 @@ fn test_guest1_component_loads() {
 #[test]
 fn test_guest2_component_loads() {
     let engine = create_engine();
-    let _component = load_component(&engine, GUEST2_PATH);
+    let _component = compile_component(&engine, GUEST2_WASM);
 }
 
 /// Verifies that guest1 instantiates and exports the `run` function.
@@ -163,13 +159,13 @@ fn test_guest2_component_loads() {
 #[test]
 fn test_guest1_exports_run_function() {
     let engine = create_engine();
-    let component = load_component(&engine, GUEST1_PATH);
-    let linker = build_test_linker(&engine);
-    let mut store = build_test_store(&engine);
+    let component = compile_component(&engine, GUEST1_WASM);
+    let linker = Linker::<()>::new(&engine);
+    let mut store = Store::new(&engine, ());
     let instance = linker
         .instantiate(&mut store, &component)
         .expect("instantiate guest1");
-    let run = instance.get_typed_func::<(), ()>(&mut store, "run");
+    let run = instance.get_typed_func::<(), (String,)>(&mut store, "run");
     assert!(run.is_ok(), "guest1 must export `run`");
 }
 
@@ -181,13 +177,13 @@ fn test_guest1_exports_run_function() {
 #[test]
 fn test_guest2_exports_run_function() {
     let engine = create_engine();
-    let component = load_component(&engine, GUEST2_PATH);
-    let linker = build_test_linker(&engine);
-    let mut store = build_test_store(&engine);
+    let component = compile_component(&engine, GUEST2_WASM);
+    let linker = Linker::<()>::new(&engine);
+    let mut store = Store::new(&engine, ());
     let instance = linker
         .instantiate(&mut store, &component)
         .expect("instantiate guest2");
-    let run = instance.get_typed_func::<(Option<String>,), ()>(&mut store, "run");
+    let run = instance.get_typed_func::<(Option<String>,), (String,)>(&mut store, "run");
     assert!(run.is_ok(), "guest2 must export `run`");
 }
 
@@ -199,9 +195,9 @@ fn test_guest2_exports_run_function() {
 #[test]
 fn test_guest2_exports_describe_function() {
     let engine = create_engine();
-    let component = load_component(&engine, GUEST2_PATH);
-    let linker = build_test_linker(&engine);
-    let mut store = build_test_store(&engine);
+    let component = compile_component(&engine, GUEST2_WASM);
+    let linker = Linker::<()>::new(&engine);
+    let mut store = Store::new(&engine, ());
     let instance = linker
         .instantiate(&mut store, &component)
         .expect("instantiate guest2");
@@ -217,9 +213,9 @@ fn test_guest2_exports_describe_function() {
 #[test]
 fn test_guest1_does_not_export_describe() {
     let engine = create_engine();
-    let component = load_component(&engine, GUEST1_PATH);
-    let linker = build_test_linker(&engine);
-    let mut store = build_test_store(&engine);
+    let component = compile_component(&engine, GUEST1_WASM);
+    let linker = Linker::<()>::new(&engine);
+    let mut store = Store::new(&engine, ());
     let instance = linker
         .instantiate(&mut store, &component)
         .expect("instantiate guest1");
@@ -227,45 +223,30 @@ fn test_guest1_does_not_export_describe() {
     assert!(describe.is_err(), "guest1 must not export `describe`");
 }
 
-/// Verifies that guest1's `run` executes without error.
+/// Verifies that guest1's `run` returns a string containing `guest1`.
 ///
 /// # Panics
 ///
-/// Panics if `run` traps or returns an error.
+/// Panics if the returned string does not contain `guest1`.
 #[test]
-fn test_guest1_run_executes_successfully() {
+fn test_guest1_run_returns_expected_string() {
     let engine = create_engine();
-    let component = load_component(&engine, GUEST1_PATH);
-    let linker = build_test_linker(&engine);
-    let mut store = build_test_store(&engine);
-    let instance = linker
-        .instantiate(&mut store, &component)
-        .expect("instantiate guest1");
-    let run = instance
-        .get_typed_func::<(), ()>(&mut store, "run")
-        .expect("get run");
-    run.call(&mut store, ()).expect("execute run");
+    let component = compile_component(&engine, GUEST1_WASM);
+    let result = call_run_no_args(&engine, &component);
+    assert!(result.contains("guest1"), "result must contain 'guest1'");
 }
 
-/// Verifies that guest2's `run` executes without error.
+/// Verifies that guest2's `run` returns a string containing `guest2`.
 ///
 /// # Panics
 ///
-/// Panics if `run` traps or returns an error.
+/// Panics if the returned string does not contain `guest2`.
 #[test]
-fn test_guest2_run_executes_successfully() {
+fn test_guest2_run_returns_expected_string() {
     let engine = create_engine();
-    let component = load_component(&engine, GUEST2_PATH);
-    let linker = build_test_linker(&engine);
-    let mut store = build_test_store(&engine);
-    let instance = linker
-        .instantiate(&mut store, &component)
-        .expect("instantiate guest2");
-    let run = instance
-        .get_typed_func::<(Option<String>,), ()>(&mut store, "run")
-        .expect("get run");
-    run.call(&mut store, (Some("Pulley".to_string()),))
-        .expect("execute run");
+    let component = compile_component(&engine, GUEST2_WASM);
+    let result = call_run_with_name(&engine, &component, Some("Pulley"));
+    assert!(result.contains("guest2"), "result must contain 'guest2'");
 }
 
 /// Verifies that guest2's `describe` returns the expected string.
@@ -276,131 +257,64 @@ fn test_guest2_run_executes_successfully() {
 #[test]
 fn test_guest2_describe_returns_expected_string() {
     let engine = create_engine();
-    let component = load_component(&engine, GUEST2_PATH);
-    let linker = build_test_linker(&engine);
-    let mut store = build_test_store(&engine);
-    let instance = linker
-        .instantiate(&mut store, &component)
-        .expect("instantiate guest2");
-    let describe = instance
-        .get_typed_func::<(), (String,)>(&mut store, "describe")
-        .expect("get describe");
-    let (message,) = describe.call(&mut store, ()).expect("execute describe");
-    assert_eq!(message, "guest2 has an extra `describe` export");
+    let component = compile_component(&engine, GUEST2_WASM);
+    let result = call_describe(&engine, &component);
+    assert_eq!(result, "guest2 has an extra `describe` export");
 }
 
-/// Verifies that guest1 imports WASI interfaces.
+/// Verifies that guest1 has no WASI imports.
 ///
 /// # Panics
 ///
-/// Panics if no WASI-related imports are found.
+/// Panics if WASI-related imports are found in guest1.
 #[test]
-fn test_guest1_imports_wasi() {
+fn test_guest1_has_no_wasi_imports() {
     let engine = create_engine();
-    let component = load_component(&engine, GUEST1_PATH);
+    let component = compile_component(&engine, GUEST1_WASM);
     let ty = component.component_type();
     let import_names: Vec<_> = ty
         .imports(&engine)
         .map(|(name, _)| name.to_string())
         .collect();
-    assert!(!import_names.is_empty(), "guest1 must have imports");
     assert!(
-        import_names.iter().any(|n| n.contains("wasi")),
-        "guest1 must import WASI interfaces"
+        !import_names.iter().any(|n| n.contains("wasi")),
+        "guest1 must not import WASI interfaces"
     );
 }
 
-/// Verifies that guest2 imports WASI interfaces.
+/// Verifies that guest2 has no WASI imports.
 ///
 /// # Panics
 ///
-/// Panics if no WASI-related imports are found.
+/// Panics if WASI-related imports are found in guest2.
 #[test]
-fn test_guest2_imports_wasi() {
+fn test_guest2_has_no_wasi_imports() {
     let engine = create_engine();
-    let component = load_component(&engine, GUEST2_PATH);
+    let component = compile_component(&engine, GUEST2_WASM);
     let ty = component.component_type();
     let import_names: Vec<_> = ty
         .imports(&engine)
         .map(|(name, _)| name.to_string())
         .collect();
-    assert!(!import_names.is_empty(), "guest2 must have imports");
     assert!(
-        import_names.iter().any(|n| n.contains("wasi")),
-        "guest2 must import WASI interfaces"
+        !import_names.iter().any(|n| n.contains("wasi")),
+        "guest2 must not import WASI interfaces"
     );
-}
-
-/// Verifies that guest1's `run` produces output containing `guest1`.
-///
-/// # Panics
-///
-/// Panics if no output is captured or `guest1` is not in stdout.
-#[test]
-fn test_guest1_run_produces_output() {
-    let engine = create_engine();
-    let component = load_component(&engine, GUEST1_PATH);
-    let linker = build_test_linker(&engine);
-    let (mut store, stdout) = build_capture_store(&engine);
-    let instance = linker
-        .instantiate(&mut store, &component)
-        .expect("instantiate guest1");
-    let run = instance
-        .get_typed_func::<(), ()>(&mut store, "run")
-        .expect("get run");
-    run.call(&mut store, ()).expect("execute run");
-    drop(store);
-    let output = String::from_utf8(stdout.contents().to_vec()).expect("valid UTF-8");
-    assert!(output.contains("guest1"), "stdout must contain 'guest1'");
-}
-
-/// Verifies that guest2's `run` produces output containing `guest2`.
-///
-/// # Panics
-///
-/// Panics if no output is captured or `guest2` is not in stdout.
-#[test]
-fn test_guest2_run_produces_output() {
-    let engine = create_engine();
-    let component = load_component(&engine, GUEST2_PATH);
-    let linker = build_test_linker(&engine);
-    let (mut store, stdout) = build_capture_store(&engine);
-    let instance = linker
-        .instantiate(&mut store, &component)
-        .expect("instantiate guest2");
-    let run = instance
-        .get_typed_func::<(Option<String>,), ()>(&mut store, "run")
-        .expect("get run");
-    run.call(&mut store, (Some("Pulley".to_string()),))
-        .expect("execute run");
-    drop(store);
-    let output = String::from_utf8(stdout.contents().to_vec()).expect("valid UTF-8");
-    assert!(output.contains("guest2"), "stdout must contain 'guest2'");
 }
 
 /// Verifies that guest2's `run` uses the default name when `None` is passed.
 ///
 /// # Panics
 ///
-/// Panics if stdout does not contain the default `"world"` greeting.
+/// Panics if the returned string does not contain `world`.
 #[test]
 fn test_guest2_run_default_name() {
     let engine = create_engine();
-    let component = load_component(&engine, GUEST2_PATH);
-    let linker = build_test_linker(&engine);
-    let (mut store, stdout) = build_capture_store(&engine);
-    let instance = linker
-        .instantiate(&mut store, &component)
-        .expect("instantiate guest2");
-    let run = instance
-        .get_typed_func::<(Option<String>,), ()>(&mut store, "run")
-        .expect("get run");
-    run.call(&mut store, (None,)).expect("execute run");
-    drop(store);
-    let output = String::from_utf8(stdout.contents().to_vec()).expect("valid UTF-8");
+    let component = compile_component(&engine, GUEST2_WASM);
+    let result = call_run_with_name(&engine, &component, None);
     assert!(
-        output.contains("world"),
-        "stdout must contain default 'world'"
+        result.contains("world"),
+        "result must contain default 'world'"
     );
 }
 
@@ -408,22 +322,37 @@ fn test_guest2_run_default_name() {
 ///
 /// # Panics
 ///
-/// Panics if stdout does not contain the provided name.
+/// Panics if the returned string does not contain the provided name.
 #[test]
 fn test_guest2_run_custom_name() {
     let engine = create_engine();
-    let component = load_component(&engine, GUEST2_PATH);
-    let linker = build_test_linker(&engine);
-    let (mut store, stdout) = build_capture_store(&engine);
-    let instance = linker
-        .instantiate(&mut store, &component)
-        .expect("instantiate guest2");
-    let run = instance
-        .get_typed_func::<(Option<String>,), ()>(&mut store, "run")
-        .expect("get run");
-    run.call(&mut store, (Some("Pulley".to_string()),))
-        .expect("execute run");
-    drop(store);
-    let output = String::from_utf8(stdout.contents().to_vec()).expect("valid UTF-8");
-    assert!(output.contains("Pulley"), "stdout must contain 'Pulley'");
+    let component = compile_component(&engine, GUEST2_WASM);
+    let result = call_run_with_name(&engine, &component, Some("Pulley"));
+    assert!(result.contains("Pulley"), "result must contain 'Pulley'");
+}
+
+/// Verifies that guest1's `run` returns the exact expected message.
+///
+/// # Panics
+///
+/// Panics if the returned string does not match.
+#[test]
+fn test_guest1_run_exact_message() {
+    let engine = create_engine();
+    let component = compile_component(&engine, GUEST1_WASM);
+    let result = call_run_no_args(&engine, &component);
+    assert_eq!(result, "guest1 run() called");
+}
+
+/// Verifies that guest2's `run` returns the exact greeting for a given name.
+///
+/// # Panics
+///
+/// Panics if the returned string does not match.
+#[test]
+fn test_guest2_run_exact_greeting() {
+    let engine = create_engine();
+    let component = compile_component(&engine, GUEST2_WASM);
+    let result = call_run_with_name(&engine, &component, Some("Pulley"));
+    assert_eq!(result, "guest2 run() called: hello, Pulley!");
 }

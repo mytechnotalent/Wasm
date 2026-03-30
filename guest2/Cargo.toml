@@ -3,13 +3,11 @@ name = "guest2"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-wit-bindgen-rt = { version = "0.44.0", features = ["bitflags"] }
-
 [lib]
 crate-type = ["cdylib"]
 
-[package.metadata.component]
-package = "component:guest2"
+[dependencies]
+dlmalloc = { version = "0.2", features = ["global"] }
+wit-bindgen = "0.44.0"
 
-[package.metadata.component.dependencies]
+[workspace]

@@ -4,57 +4,23 @@
 //!
 //! # Component-Model Host Running on Pulley
 //!
-//! Loads WebAssembly Component Model guest artifacts produced by
-//! `cargo-component`, instantiates them with WASI support, and executes
-//! exported functions via the Pulley interpreter backend. WIT contracts
-//! for guests are in `guest1/wit/world.wit` and `guest2/wit/world.wit`.
+//! Loads AOT-precompiled WebAssembly Component Model guest artifacts from
+//! embedded bytes, instantiates them, and executes exported functions via
+//! the Pulley interpreter backend. Guests are `no_std` components compiled
+//! to `wasm32-unknown-unknown` with WIT contracts in `guest1/wit/world.wit`
+//! and `guest2/wit/world.wit`.
 
-/// Component Model loader, linker, and resource table types.
-use wasmtime::component::{Component, Linker, ResourceTable};
-/// Wasmtime runtime core types.
-use wasmtime::{Config, Engine, Result, Store};
-/// WASI context, view trait, and implementation for host state.
-use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
+use wasmtime::component::{Component, Linker}; // Component Model loader and linker.
+use wasmtime::{Config, Engine, Result, Store}; // Wasmtime runtime core types.
+
+/// Precompiled Pulley bytecode for guest1, embedded at build time by `build.rs`.
+const GUEST1_PRECOMPILED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/guest1.cwasm"));
+
+/// Precompiled Pulley bytecode for guest2, embedded at build time by `build.rs`.
+const GUEST2_PRECOMPILED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/guest2.cwasm"));
 
 /// Default name passed to guests that accept an `Option<String>` parameter.
 const DEFAULT_GUEST_NAME: &str = "Pulley";
-
-/// Pulley target selected for this host architecture.
-///
-/// This value is passed to `Config::target` so Wasmtime compiles and executes
-/// for the Pulley backend instead of selecting a native host target.
-const PULLEY_TARGET: &str = "pulley64";
-
-/// Paths to built Rust guest components loaded by the host.
-///
-/// Each path points to a component artifact produced by `cargo component build`
-/// for an individual guest package.
-const COMPONENT_PATHS: [&str; 2] = [
-    "guest1/target/wasm32-wasip1/debug/guest1.wasm",
-    "guest2/target/wasm32-wasip1/debug/guest2.wasm",
-];
-
-/// Host state for component instantiation with WASI support.
-struct HostState {
-    /// WASI context containing stdio configuration and runtime capabilities.
-    ctx: WasiCtx,
-    /// Resource table required by component-model/WASI resource handles.
-    table: ResourceTable,
-}
-
-impl WasiView for HostState {
-    /// Returns mutable access to the WASI context and resource table.
-    ///
-    /// # Returns
-    ///
-    /// A `WasiCtxView` containing references to this state's `ctx` and `table`.
-    fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView {
-            ctx: &mut self.ctx,
-            table: &mut self.table,
-        }
-    }
-}
 
 /// Builds a Wasmtime engine configured for Component Model + Pulley.
 ///
@@ -62,127 +28,112 @@ impl WasiView for HostState {
 ///
 /// A configured `Engine` that enables component-model support and targets
 /// `pulley64`.
-///
-/// # Errors
-///
-/// Returns an error if the Pulley target cannot be set or if engine creation
-/// fails.
 fn build_engine() -> Result<Engine> {
     let mut config = Config::new();
     config.wasm_component_model(true);
-    config.target(PULLEY_TARGET)?;
+    config.target("pulley64")?;
     Engine::new(&config)
 }
 
-/// Creates a component linker with synchronous WASI imports registered.
+/// Deserializes a precompiled component from embedded bytes.
+///
+/// # Safety
+///
+/// Uses `unsafe` to call `Component::deserialize`, which assumes the byte
+/// buffer is trusted serialized Wasmtime component code. This invariant is
+/// upheld by `build.rs`, which produces these bytes via Wasmtime.
 ///
 /// # Arguments
 ///
-/// * `engine` - Engine used to create the linker and bind host interfaces.
+/// * `engine` - Runtime engine configured identically to build-time settings.
+/// * `bytes` - Precompiled Pulley component bytes.
 ///
 /// # Returns
 ///
-/// A `Linker<HostState>` ready to instantiate components that import WASI.
-///
-/// # Errors
-///
-/// Returns an error if WASI interfaces cannot be added to the linker.
-fn build_linker(engine: &Engine) -> Result<Linker<HostState>> {
-    let mut linker = Linker::<HostState>::new(engine);
-    wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
-    Ok(linker)
+/// A deserialized `Component` ready for instantiation.
+fn load_component(engine: &Engine, bytes: &[u8]) -> Result<Component> {
+    unsafe { Component::deserialize(engine, bytes) }
 }
 
-/// Creates store state with inherited stdio for guest output.
+/// Instantiates guest1 and calls its exported `run` function.
 ///
 /// # Arguments
 ///
-/// * `engine` - Engine used to construct the store.
+/// * `engine` - Runtime engine.
+/// * `component` - Deserialized guest1 Pulley component.
 ///
 /// # Returns
 ///
-/// A `Store<HostState>` initialized with WASI stdio inheritance and an empty
-/// resource table.
-fn build_store(engine: &Engine) -> Store<HostState> {
-    let state = HostState {
-        ctx: WasiCtx::builder().inherit_stdio().build(),
-        table: ResourceTable::new(),
-    };
-    Store::new(engine, state)
+/// The string returned by guest1's `run` export.
+fn run_guest1(engine: &Engine, component: &Component) -> Result<String> {
+    let linker = Linker::<()>::new(engine);
+    let mut store = Store::new(engine, ());
+    let instance = linker.instantiate(&mut store, component)?;
+    let run = instance.get_typed_func::<(), (String,)>(&mut store, "run")?;
+    let (result,) = run.call(&mut store, ())?;
+    Ok(result)
 }
 
-/// Loads one component artifact, instantiates it, and executes exported calls.
-///
-/// This function first tries to invoke `run` with an `Option<String>` parameter.
-/// If the export does not accept a parameter, it falls back to calling `run`
-/// with no arguments. It also checks for an optional `describe` export, and
-/// if present, invokes it and prints the returned message.
+/// Instantiates guest2 and calls its exported `run` and `describe` functions.
 ///
 /// # Arguments
 ///
-/// * `engine` - Engine used to compile and instantiate the component.
-/// * `path` - Filesystem path to the component artifact (`.wasm`).
-/// * `name` - Name string passed to guests that accept an `Option<String>` parameter.
+/// * `engine` - Runtime engine.
+/// * `component` - Deserialized guest2 Pulley component.
+/// * `name` - Name passed to guest2's `run` export.
 ///
 /// # Returns
 ///
-/// `Ok(())` if loading, instantiation, and all invoked exports succeed.
-///
-/// # Errors
-///
-/// Returns an error if:
-///
-/// * The component file cannot be read or compiled.
-/// * WASI linker setup fails.
-/// * Instantiation fails due to missing or incompatible imports.
-/// * The required `run` export is missing or has an incompatible type.
-/// * A called export traps or returns an invocation error.
-fn run_component(engine: &Engine, path: &str, name: &str) -> Result<()> {
-    let component = Component::from_file(engine, path)?;
-    let linker = build_linker(engine)?;
-    let mut store = build_store(engine);
-    let instance = linker.instantiate(&mut store, &component)?;
-    if let Ok(run) = instance.get_typed_func::<(Option<String>,), ()>(&mut store, "run") {
-        run.call(&mut store, (Some(name.to_string()),))?;
-    } else {
-        let run = instance.get_typed_func::<(), ()>(&mut store, "run")?;
-        run.call(&mut store, ())?;
-    }
-    if let Ok(describe) = instance.get_typed_func::<(), (String,)>(&mut store, "describe") {
-        let (message,) = describe.call(&mut store, ())?;
-        println!("describe: {}", message);
-    }
-    Ok(())
+/// A tuple of the `run` result string and the `describe` result string.
+fn run_guest2(engine: &Engine, component: &Component, name: &str) -> Result<(String, String)> {
+    let linker = Linker::<()>::new(engine);
+    let mut store = Store::new(engine, ());
+    let instance = linker.instantiate(&mut store, component)?;
+    let run = instance.get_typed_func::<(Option<String>,), (String,)>(&mut store, "run")?;
+    let (run_result,) = run.call(&mut store, (Some(name.to_string()),))?;
+    let describe = instance.get_typed_func::<(), (String,)>(&mut store, "describe")?;
+    let (desc_result,) = describe.call(&mut store, ())?;
+    Ok((run_result, desc_result))
 }
 
-/// Runs the full host flow for all configured component artifacts.
-///
-/// Reads an optional name from the first CLI argument (defaults to
-/// `DEFAULT_GUEST_NAME`). The sequence is:
-///
-/// 1. Parse CLI arguments for an optional guest name.
-/// 2. Create an engine configured for component-model execution on Pulley.
-/// 3. Iterate over `COMPONENT_PATHS`.
-/// 4. For each artifact, load, instantiate, and invoke exports.
+/// Parses the target name from CLI arguments.
 ///
 /// # Returns
 ///
-/// `Ok(())` when all configured components execute successfully.
+/// The first positional argument or `DEFAULT_GUEST_NAME` when omitted.
+fn parse_name() -> String {
+    std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| DEFAULT_GUEST_NAME.to_string())
+}
+
+/// Runs the full host flow for both precompiled component artifacts.
 ///
-/// # Errors
+/// # Returns
 ///
-/// Returns the first error encountered while configuring the engine or running
-/// any component.
-fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    let name = args.get(1).map_or(DEFAULT_GUEST_NAME, |s| s.as_str());
+/// `Ok(())` when both components execute successfully.
+fn run() -> Result<()> {
+    let name = parse_name();
     println!("Building Pulley component engine...");
     let engine = build_engine()?;
-    for path in COMPONENT_PATHS {
-        println!("Compiling component from {}...", path);
-        println!("Instantiating and calling run...");
-        run_component(&engine, path, name)?;
-    }
+    println!("Deserializing guest1 component...");
+    let guest1 = load_component(&engine, GUEST1_PRECOMPILED)?;
+    let result = run_guest1(&engine, &guest1)?;
+    println!("{result}");
+    println!("Deserializing guest2 component...");
+    let guest2 = load_component(&engine, GUEST2_PRECOMPILED)?;
+    let (run_result, desc_result) = run_guest2(&engine, &guest2, &name)?;
+    println!("{run_result}");
+    println!("describe: {desc_result}");
     println!("Done.");
     Ok(())
+}
+
+/// Program entry point.
+///
+/// # Returns
+///
+/// `Ok(())` when the host runs successfully.
+fn main() -> Result<()> {
+    run()
 }
