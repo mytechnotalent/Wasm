@@ -6,7 +6,7 @@
 
 A Rust project that runs **WebAssembly Component Model** `#![no_std]` guest components through the **Pulley interpreter** using [Wasmtime](https://github.com/bytecodealliance/wasmtime). Two guest components are compiled to `wasm32-unknown-unknown`, encoded via `ComponentEncoder`, AOT-precompiled to Pulley bytecode at build time, and deserialized at runtime by the host — the same architecture used on embedded microcontrollers like the RP2350.
 
----
+<br>
 
 ## Table of Contents
 
@@ -25,7 +25,7 @@ A Rust project that runs **WebAssembly Component Model** `#![no_std]` guest comp
 - [Tutorial](#tutorial)
 - [License](#license)
 
----
+<br>
 
 ## Overview
 
@@ -43,8 +43,6 @@ This project demonstrates that the WebAssembly Component Model is not limited to
 - **Multiple guests** — two components with intentionally different WIT contracts loaded by the same host
 - **Industry-standard runtime** — Wasmtime is the reference WebAssembly implementation
 - **Embedded-ready** — identical architecture to [embedded-wasm-uart-rp2350](https://github.com/mytechnotalent/embedded-wasm-uart-rp2350), swap `pulley64` for `pulley32`
-
----
 
 ## Architecture
 
@@ -93,8 +91,6 @@ This project demonstrates that the WebAssembly Component Model is not limited to
 └──────────────────────────────────────────────────────────┘
 ```
 
----
-
 ## Project Structure
 
 ```
@@ -120,8 +116,6 @@ Wasm/
 ├── README.md          # This file
 └── target/            # Build artifacts
 ```
-
----
 
 ## Source Files
 
@@ -153,8 +147,6 @@ Orchestrates everything at runtime: creates an `Engine` configured for Component
 
 15 tests validating both guest components end-to-end: component loading, export verification (`run`, `describe`, absence of `describe` on guest1), return value checks, describe return value, absence of WASI imports, and parameter passing (default name, custom name, exact message matching).
 
----
-
 ## Prerequisites
 
 ### Toolchain
@@ -164,8 +156,6 @@ Orchestrates everything at runtime: creates an `Engine` configured for Component
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup target add wasm32-unknown-unknown
 ```
-
----
 
 ## Building
 
@@ -182,8 +172,6 @@ The `build.rs` script handles everything automatically:
 5. Compiles `host.rs` with the embedded precompiled components
 
 No separate guest build step required.
-
----
 
 ## Usage
 
@@ -225,8 +213,6 @@ Done.
 
 The `--` separates `cargo` arguments from your program's arguments. `"Kevin"` becomes `args[1]` in `host.rs`.
 
----
-
 ## Testing
 
 ```bash
@@ -242,8 +228,6 @@ Runs 15 integration tests validating:
 - Describe return value check
 - Absence of WASI imports (guests are `#![no_std]`)
 - Parameter passing (default `None` -> `"world"`, custom `Some("Pulley")`)
-
----
 
 ## How It Works
 
@@ -418,8 +402,6 @@ main()
    cargo build && cargo run --bin hello
    ```
 
----
-
 ## WIT Interface Contract
 
 **guest1:**
@@ -449,8 +431,6 @@ world guest2-world {
 | guest2    | `run`      | `func(name: option<string>) -> string` | Returns greeting with name (defaults to `"world"`)     |
 | guest2    | `describe` | `func() -> string`                     | Returns a description string identifying the component |
 
----
-
 ## Extending the Project
 
 ### Adding New WIT Exports
@@ -478,8 +458,6 @@ world guest2-world {
 
 Edit the `run()` function in any guest's `lib.rs`. Run `cargo build` — the build script recompiles the guest, re-encodes, and re-precompiles automatically.
 
----
-
 ## Troubleshooting
 
 | Symptom                                  | Cause                               | Fix                                                          |
@@ -492,13 +470,11 @@ Edit the `run()` function in any guest's `lib.rs`. Run `cargo build` — the bui
 | `cabi_realloc` link error                | No global allocator                 | Add `#[global_allocator]` with `dlmalloc::GlobalDlmalloc`    |
 | Tests fail                               | Guests not rebuilt                  | Run `cargo build` before `cargo test`                        |
 
----
-
 ## Tutorial
 
 For a comprehensive, line-by-line walkthrough of every source file, struct, and function in this project — including detailed explanations of `Engine`, `Store`, `Linker`, `Component`, AOT precompilation, Pulley, and the connection to embedded systems — see [TUTORIAL.md](TUTORIAL.md).
 
----
+<br>
 
 ## License
 
