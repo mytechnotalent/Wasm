@@ -2,7 +2,7 @@
 
 ## WebAssembly Component Model with Pulley
 
-> Part of the [embedded-wasm](https://github.com/mytechnotalent/embedded-wasm) collection — a set of repos that explores the WebAssembly Component Model runtime (Wasmtime + Pulley interpreter) from desktop tutorials to bare-metal RP2350 embedded targets with hardware capabilities exposed through WIT.
+> Based on [embedded-wasm](https://github.com/mytechnotalent/embedded-wasm) collection — a set of repos that explores the WebAssembly Component Model runtime (Wasmtime + Pulley interpreter) from desktop tutorials to bare-metal RP2350 embedded targets with hardware capabilities exposed through WIT.
 
 A Rust project that runs **WebAssembly Component Model** `#![no_std]` guest components through the **Pulley interpreter** using [Wasmtime](https://github.com/bytecodealliance/wasmtime). Two guest components are compiled to `wasm32-unknown-unknown`, encoded via `ComponentEncoder`, AOT-precompiled to Pulley bytecode at build time, and deserialized at runtime by the host — the same architecture used on embedded microcontrollers like the RP2350.
 
