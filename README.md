@@ -1,0 +1,470 @@
+# Wasm
+
+## WebAssembly Component Model with Pulley
+
+> Part of the [embedded-wasm](https://github.com/mytechnotalent/embedded-wasm) collection — a set of repos that explores the WebAssembly Component Model runtime (Wasmtime + Pulley interpreter) from desktop tutorials to bare-metal RP2350 embedded targets with hardware capabilities exposed through WIT.
+
+A Rust project that runs **WebAssembly Component Model** guest components through the **Pulley interpreter** using [Wasmtime](https://github.com/bytecodealliance/wasmtime). Two guest components are compiled to WASM via `cargo-component`, loaded at runtime by a host binary, and executed through typed WIT interfaces with full WASI support — the same architecture used on embedded microcontrollers like the RP2350.
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Project Structure](#project-structure)
+- [Source Files](#source-files)
+- [Prerequisites](#prerequisites)
+- [Building](#building)
+- [Usage](#usage)
+- [Testing](#testing)
+- [How It Works](#how-it-works)
+- [WIT Interface Contract](#wit-interface-contract)
+- [Extending the Project](#extending-the-project)
+- [Troubleshooting](#troubleshooting)
+- [Tutorial](#tutorial)
+- [License](#license)
+
+---
+
+## Overview
+
+This project demonstrates that the WebAssembly Component Model is not limited to browsers — the same host/guest architecture runs identically on a laptop and on a bare-metal microcontroller. The host uses [Wasmtime](https://github.com/bytecodealliance/wasmtime) with the **Pulley interpreter** (a portable WebAssembly execution backend) to load and run precompiled WASM components that communicate through typed WIT interfaces.
+
+**Key properties:**
+
+- **Pure Rust** — host and guests are 100% Rust
+- **Component Model** — typed WIT interfaces, not raw `extern "C"` imports
+- **Pulley execution** — compiled to Pulley bytecode via `config.target("pulley64")`, portable to any CPU
+- **WASI support** — guests use `println!()` through WASI stdio, linked by the host
+- **Parameterized exports** — guest2 accepts `option<string>` via the Component Model canonical ABI
+- **Multiple guests** — two components with intentionally different WIT contracts loaded by the same host
+- **Industry-standard runtime** — Wasmtime is the reference WebAssembly implementation
+- **Embedded-ready** — identical architecture to [embedded-wasm-uart-rp2350](https://github.com/mytechnotalent/embedded-wasm-uart-rp2350), swap `pulley64` for `pulley32`
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                    Host (host.rs)                        │
+│                                                          │
+│  ┌───────────┐  ┌─────────┐  ┌──────────────────────┐    │
+│  │  Engine   │  │ Linker  │  │   Store<HostState>   │    │
+│  │  Pulley64 │  │  WASI   │  │  WasiCtx + Resource  │    │
+│  │  CompModel│  │  p2 sync│  │  Table               │    │
+│  └─────┬─────┘  └────┬────┘  └──────────┬───────────┘    │
+│        │             │                  │                │
+│        v             v                  v                │
+│  ┌─────────────────────────────────────────────────┐     │
+│  │          linker.instantiate(&store, &component) │     │
+│  └──────────────────────┬──────────────────────────┘     │
+│                         │                                │
+│         ┌───────────────┴───────────────┐                │
+│         │                               │                │
+│         v                               v                │
+│  ┌──────────────────┐   ┌──────────────────────────┐     │
+│  │ guest1.wasm      │   │ guest2.wasm              │     │
+│  │                  │   │                          │     │
+│  │ exports:         │   │ exports:                 │     │
+│  │   run()          │   │   run(name: option<str>) │     │
+│  │                  │   │   describe() -> string   │     │
+│  │ imports:         │   │ imports:                 │     │
+│  │   wasi:cli/*     │   │   wasi:cli/*             │     │
+│  └──────────────────┘   └──────────────────────────┘     │
+│                                                          │
+│  stdout -> Terminal (via WASI inherit_stdio)             │
+└──────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Project Structure
+
+```
+Wasm/
+├── host.rs             # Host binary: engine, linker, store, component loading
+├── Cargo.toml          # Host dependencies (wasmtime 43.0.0, wasmtime-wasi 43.0.0)
+├── tests/
+│   └── integration.rs  # 15 integration tests: loading, exports, stdout capture
+├── guest1/
+│   ├── Cargo.toml      # Guest1 package (cdylib, wit-bindgen-rt 0.44.0)
+│   ├── wit/
+│   │   └── world.wit   # WIT contract: export run: func()
+│   └── src/
+│       ├── lib.rs      # Guest1 impl: prints "guest1 run() called"
+│       └── bindings.rs # Auto-generated by cargo-component (do not edit)
+├── guest2/
+│   ├── Cargo.toml      # Guest2 package (cdylib, wit-bindgen-rt 0.44.0)
+│   ├── wit/
+│   │   └── world.wit   # WIT contract: export run(name), export describe
+│   └── src/
+│       ├── lib.rs      # Guest2 impl: greeting with optional name + describe
+│       └── bindings.rs # Auto-generated by cargo-component (do not edit)
+├── TUTORIAL.md         # Comprehensive line-by-line tutorial
+├── README.md           # This file
+└── target/             # Build artifacts
+```
+
+---
+
+## Source Files
+
+### `guest1/wit/world.wit` — WIT Interface Definition
+
+Defines the `component:guest1` package with the `example` world. Exports a single `run` function with no parameters — the simplest possible Component Model contract.
+
+### `guest2/wit/world.wit` — WIT Interface Definition
+
+Defines the `component:guest2` package with the `example` world. Exports `run` with an `option<string>` parameter and `describe` returning a `string` — demonstrating rich Component Model types across the host-guest boundary.
+
+### `guest1/src/lib.rs` — WASM Guest Component
+
+The simplest guest component compiled to `wasm32-wasip1`. Uses `mod bindings` (auto-generated by `cargo-component` from the WIT world) and implements the `Guest` trait with a `run()` function that prints `"guest1 run() called"` to stdout via WASI.
+
+### `guest2/src/lib.rs` — WASM Guest Component
+
+A guest component with a richer API. Implements `Guest` with `run(name: Option<String>)` that greets using the provided name (defaulting to `"world"` via `DEFAULT_NAME`) and `describe()` that returns a short string identifying the component. Demonstrates `option<string>` parameter passing through the canonical ABI.
+
+### `host.rs` — Host Binary
+
+Orchestrates everything: creates an `Engine` configured for Component Model + Pulley (`pulley64`), loads each guest `.wasm` file via `Component::from_file`, builds a `Linker` with synchronous WASI imports (`wasmtime_wasi::p2::add_to_linker_sync`), creates a `Store` holding `HostState` (`WasiCtx` + `ResourceTable` with inherited stdio), instantiates each component, and calls exports. Tries `run(Option<String>)` first (for guest2), falls back to `run()` (for guest1), then optionally calls `describe`. Reads an optional CLI argument for the guest name (defaults to `"Pulley"`).
+
+### `tests/integration.rs` — Integration Tests
+
+15 tests validating both guest components end-to-end: component loading, export verification (`run`, `describe`, absence of `describe` on guest1), execution without traps, describe return value, WASI import presence, stdout capture via `MemoryOutputPipe`, and parameter passing (default name, custom name).
+
+---
+
+## Prerequisites
+
+### Toolchain
+
+```bash
+# Rust (stable)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# cargo-component (builds guest WASM components)
+cargo install cargo-component
+```
+
+---
+
+## Building
+
+### Build guest components
+
+```bash
+cargo component build --manifest-path guest1/Cargo.toml
+cargo component build --manifest-path guest2/Cargo.toml
+```
+
+Each command compiles the guest Rust code to `wasm32-wasip1`, generates bindings from the WIT file, and packages the result as a Component Model `.wasm` artifact.
+
+### Build host
+
+```bash
+cargo build
+```
+
+Compiles `host.rs` into the `hello` binary with Wasmtime and Wasmtime-WASI linked in.
+
+---
+
+## Usage
+
+### Run with default name
+
+```bash
+cargo run --bin hello
+```
+
+Output:
+
+```
+Building Pulley component engine...
+Compiling component from guest1/target/wasm32-wasip1/debug/guest1.wasm...
+Instantiating and calling run...
+guest1 run() called
+Compiling component from guest2/target/wasm32-wasip1/debug/guest2.wasm...
+Instantiating and calling run...
+guest2 run() called: hello, Pulley!
+describe: guest2 has an extra `describe` export
+Done.
+```
+
+### Run with a custom name
+
+```bash
+cargo run --bin hello -- "Kevin"
+```
+
+Output:
+
+```
+Building Pulley component engine...
+Compiling component from guest1/target/wasm32-wasip1/debug/guest1.wasm...
+Instantiating and calling run...
+guest1 run() called
+Compiling component from guest2/target/wasm32-wasip1/debug/guest2.wasm...
+Instantiating and calling run...
+guest2 run() called: hello, Kevin!
+describe: guest2 has an extra `describe` export
+Done.
+```
+
+The `--` separates `cargo` arguments from your program's arguments. `"Kevin"` becomes `args[1]` in `host.rs`.
+
+---
+
+## Testing
+
+```bash
+cargo test
+```
+
+Runs 15 integration tests validating:
+
+- Component loading (guest1, guest2)
+- Export contract (`run` function signatures)
+- Export contract (`describe` present on guest2, absent on guest1)
+- Successful execution without traps
+- Describe return value check
+- WASI import declarations
+- Stdout capture (output contains expected strings)
+- Parameter passing (default `None` -> `"world"`, custom `Some("Pulley")`)
+
+---
+
+## How It Works
+
+### 1. The WIT Interfaces (`guest1/wit/world.wit`, `guest2/wit/world.wit`)
+
+Define the contract between host and guest:
+
+**guest1:**
+
+```wit
+package component:guest1;
+
+world example {
+    export run: func();
+}
+```
+
+**guest2:**
+
+```wit
+package component:guest2;
+
+world example {
+    export run: func(name: option<string>);
+    export describe: func() -> string;
+}
+```
+
+The host looks up exports by name and verifies signatures at runtime via `get_typed_func`. If a component's exports do not match, instantiation fails.
+
+### 2. The WASM Guests (`guest1/src/lib.rs`, `guest2/src/lib.rs`)
+
+Each guest uses the auto-generated `bindings` module (produced by `cargo-component` from the WIT world) and implements the `Guest` trait:
+
+**guest1:**
+
+```rust
+impl Guest for Component {
+    fn run() {
+        println!("guest1 run() called");
+    }
+}
+```
+
+**guest2:**
+
+```rust
+const DEFAULT_NAME: &str = "world";
+
+impl Guest for Component {
+    fn run(name: Option<String>) {
+        let name = name.as_deref().unwrap_or(DEFAULT_NAME);
+        println!("guest2 run() called: hello, {name}!");
+    }
+
+    fn describe() -> String {
+        "guest2 has an extra `describe` export".to_string()
+    }
+}
+```
+
+No `unsafe`, no raw pointers — `println!()` goes through WASI, and `Option<String>` is encoded/decoded automatically by the canonical ABI.
+
+### 3. The Host Runtime (`host.rs`)
+
+The host executes in this sequence:
+
+1. **`main()`** — Reads optional CLI argument (defaults to `"Pulley"`).
+2. **`build_engine()`** — Creates Engine:
+   ```
+   Config::new()
+     .wasm_component_model(true)   -> enable Component Model
+     .target("pulley64")           -> compile to Pulley bytecode
+   Engine::new(&config)
+   ```
+3. **For each component path in `COMPONENT_PATHS`:**
+4. **`run_component(engine, path, name)`** — Loads, instantiates, calls:
+   ```
+   Component::from_file()     -> read and compile .wasm to Pulley bytecode
+   build_linker()             -> Linker with WASI p2 sync imports
+   build_store()              -> Store<HostState> with inherit_stdio
+   linker.instantiate()       -> resolve imports, create Instance
+   get_typed_func("run")      -> look up export, verify signature
+   run.call()                 -> execute guest code via Pulley
+   get_typed_func("describe") -> optional, only guest2 has it
+   ```
+
+### 4. The Call Chain
+
+```
+main()
+  -> build_engine()                      [Config: pulley64 + component-model]
+  -> run_component(engine, path, name)
+       -> Component::from_file(engine, path)
+       -> build_linker(engine)
+            -> Linker::new(engine)
+            -> add_to_linker_sync()      [registers all WASI imports]
+       -> build_store(engine)
+            -> HostState { WasiCtx, ResourceTable }
+            -> Store::new(engine, state)
+       -> linker.instantiate(&store, &component)
+       -> instance.get_typed_func("run")
+       -> run.call(&store, args)         [Pulley interprets guest bytecode]
+            -> guest println!()          [WASI fd_write import]
+              -> HostState.ctx           [WasiCtx with inherit_stdio]
+                -> real stdout
+```
+
+### 5. Adding a New Component (guest3)
+
+1. Create a new component package:
+   ```bash
+   cargo component new guest3 --lib
+   ```
+
+2. Edit `guest3/wit/world.wit` — define your exports:
+   ```wit
+   package component:guest3;
+
+   world example {
+       export run: func();
+   }
+   ```
+
+3. Implement the `Guest` trait in `guest3/src/lib.rs`.
+
+4. Build it:
+   ```bash
+   cargo component build --manifest-path guest3/Cargo.toml
+   ```
+
+5. Add the path to `COMPONENT_PATHS` in `host.rs`:
+   ```rust
+   const COMPONENT_PATHS: [&str; 3] = [
+       "guest1/target/wasm32-wasip1/debug/guest1.wasm",
+       "guest2/target/wasm32-wasip1/debug/guest2.wasm",
+       "guest3/target/wasm32-wasip1/debug/guest3.wasm",
+   ];
+   ```
+
+6. Run:
+   ```bash
+   cargo run --bin hello
+   ```
+
+---
+
+## WIT Interface Contract
+
+**guest1:**
+
+```wit
+package component:guest1;
+
+world example {
+    export run: func();
+}
+```
+
+**guest2:**
+
+```wit
+package component:guest2;
+
+world example {
+    export run: func(name: option<string>);
+    export describe: func() -> string;
+}
+```
+
+| Component | Function   | Signature                    | Description                                            |
+| --------- | ---------- | ---------------------------- | ------------------------------------------------------ |
+| guest1    | `run`      | `func()`                     | Prints `"guest1 run() called"` via WASI stdout         |
+| guest2    | `run`      | `func(name: option<string>)` | Greets with name (defaults to `"world"`) via WASI      |
+| guest2    | `describe` | `func() -> string`           | Returns a description string identifying the component |
+
+---
+
+## Extending the Project
+
+### Adding New WIT Exports
+
+1. Add the export in a guest's `world.wit`:
+   ```wit
+   world example {
+       export run: func();
+       export version: func() -> string;
+   }
+   ```
+
+2. Implement the new method in `lib.rs` on the `Guest` trait.
+
+3. Look it up in `host.rs`:
+   ```rust
+   if let Ok(version) = instance.get_typed_func::<(), (String,)>(&mut store, "version") {
+       let (v,) = version.call(&mut store, ())?;
+       println!("version: {}", v);
+   }
+   ```
+
+4. Rebuild the guest and run.
+
+### Changing Guest Behavior
+
+Edit the `run()` function in any guest's `lib.rs`. Rebuild with `cargo component build` — only the guest `.wasm` changes, the host binary does not need recompilation.
+
+---
+
+## Troubleshooting
+
+| Symptom                                  | Cause                           | Fix                                                               |
+| ---------------------------------------- | ------------------------------- | ----------------------------------------------------------------- |
+| `Component::from_file` fails             | Guest not built                 | Run `cargo component build --manifest-path guest1/Cargo.toml`     |
+| `Component::from_file` fails             | Wrong path in `COMPONENT_PATHS` | Check that the `.wasm` file exists at the specified path          |
+| `instantiate` fails with missing imports | WASI not linked                 | Ensure `add_to_linker_sync` is called before `instantiate`        |
+| `get_typed_func` fails                   | Signature mismatch              | Verify WIT export matches the type parameters in `get_typed_func` |
+| Guest `println!()` produces no output    | stdio not inherited             | Ensure `WasiCtx::builder().inherit_stdio().build()` in store      |
+| `cargo component build` fails            | `cargo-component` not installed | Run `cargo install cargo-component`                               |
+| `config.target("pulley64")` fails        | Pulley feature not enabled      | Ensure `wasmtime` dependency has `features = ["pulley"]`          |
+| Tests fail with component not found      | Guests not built before testing | Build both guests before running `cargo test`                     |
+
+---
+
+## Tutorial
+
+For a comprehensive, line-by-line walkthrough of every source file, struct, and function in this project — including detailed explanations of `Engine`, `Store`, `Linker`, `Component`, `HostState`, WASI, Pulley, and the connection to embedded systems — see [TUTORIAL.md](TUTORIAL.md).
+
+---
+
+## License
+
+- [MIT License](LICENSE)

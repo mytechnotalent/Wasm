@@ -1,0 +1,12 @@
+[package]
+name = "hello-world"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "hello"
+path = "host.rs"
+
+[dependencies]
+wasmtime = { version = "43.0.0", features = ["component-model", "pulley"] }
+wasmtime-wasi = "43.0.0"

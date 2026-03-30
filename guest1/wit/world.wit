@@ -1,0 +1,6 @@
+package component:guest1;
+
+/// An example world for the component to target.
+world example {
+    export run: func();
+}
