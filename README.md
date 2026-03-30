@@ -361,7 +361,7 @@ The host executes in this sequence:
 ```
 main()
   -> run()
-       -> parse_name()                              [CLI arg or "Pulley"]
+       -> parse_name()                               [CLI arg or "Pulley"]
        -> build_engine()                             [Config: pulley64 + component-model]
        -> load_component(engine, GUEST1_PRECOMPILED) [Component::deserialize]
        -> run_guest1(engine, component)
