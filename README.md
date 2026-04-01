@@ -475,15 +475,13 @@ Edit the `run()` function in any guest's `lib.rs`. Run `cargo build` — the bui
 
 For a comprehensive, line-by-line walkthrough of every source file, struct, and function in this project — including detailed explanations of `Engine`, `Store`, `Linker`, `Component`, AOT precompilation, Pulley, and the connection to embedded systems — see [TUTORIAL.md](TUTORIAL.md).
 
-<br>
-
 ## Reverse Engineering
 
 A comprehensive reverse engineering analysis of the release binary is available in [RE.md](RE.md). It covers the Mach-O structure, arm64 host code, Cranelift compiler integration, the Pulley interpreter dispatch loop, embedded cwasm blobs, full Pulley ISA reference, bytecode disassembly, and a Ghidra analysis walkthrough.
 
 For Pulley bytecode analysis inside Ghidra, use the [G-Pulley](https://github.com/mytechnotalent/G-Pulley) extension — a custom Ghidra processor module that disassembles Wasmtime's Pulley ISA and extracts cwasm blobs from host binaries.
 
----
+<br>
 
 ## License
 
